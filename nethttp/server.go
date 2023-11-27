@@ -13,11 +13,12 @@ import (
 var responseSizeKey = "http.response_size"
 
 type mwOptions struct {
-	opNameFunc    func(r *http.Request) string
-	spanFilter    func(r *http.Request) bool
-	spanObserver  func(span opentracing.Span, r *http.Request)
-	urlTagFunc    func(u *url.URL) string
-	componentName string
+	opNameFunc         func(r *http.Request) string
+	spanFilter         func(r *http.Request) bool
+	spanObserver       func(span opentracing.Span, r *http.Request)
+	urlTagFunc         func(u *url.URL) string
+	requestOptionsFunc func(sc opentracing.SpanContext, r *http.Request) []opentracing.StartSpanOption
+	componentName      string
 }
 
 // MWOption controls the behavior of the Middleware.
@@ -62,6 +63,14 @@ func MWSpanObserver(f func(span opentracing.Span, r *http.Request)) MWOption {
 func MWURLTagFunc(f func(u *url.URL) string) MWOption {
 	return func(options *mwOptions) {
 		options.urlTagFunc = f
+	}
+}
+
+// MWRequestOptionsFunc returns a MWOption that uses given function f
+// to customize StartSpanOptions based on the HTTP request and SpanContext
+func MWRequestOptionsFunc(f func(sc opentracing.SpanContext, r *http.Request) []opentracing.StartSpanOption) MWOption {
+	return func(options *mwOptions) {
+		options.requestOptionsFunc = f
 	}
 }
 
@@ -122,7 +131,11 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			return
 		}
 		ctx, _ := tr.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(r.Header))
-		sp := tr.StartSpan(opts.opNameFunc(r), ext.RPCServerOption(ctx))
+		sso := []opentracing.StartSpanOption{ext.RPCServerOption(ctx)}
+		if opts.requestOptionsFunc != nil {
+			sso = append(sso, opts.requestOptionsFunc(ctx, r)...)
+		}
+		sp := tr.StartSpan(opts.opNameFunc(r), sso...)
 		ext.HTTPMethod.Set(sp, r.Method)
 		ext.HTTPUrl.Set(sp, opts.urlTagFunc(r.URL))
 		ext.Component.Set(sp, componentName)

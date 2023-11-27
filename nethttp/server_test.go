@@ -426,3 +426,62 @@ func TestMiddlewareHandlerPanic(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestOptionsFuncOption(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/root", func(w http.ResponseWriter, r *http.Request) {})
+
+	const header = "custom-header"
+	const tagKey = "k"
+
+	fn := func(sc opentracing.SpanContext, r *http.Request) []opentracing.StartSpanOption {
+		if v := r.Header.Get(header); v != "" {
+			return []opentracing.StartSpanOption{
+				opentracing.Tag{Key: tagKey, Value: v},
+			}
+		}
+		return nil
+	}
+
+	const value = "x"
+	tests := []struct {
+		options   []MWOption
+		wantValue string
+	}{
+		{[]MWOption{}, ""},
+		{[]MWOption{MWRequestOptionsFunc(fn)}, value},
+	}
+
+	for _, tt := range tests {
+		testCase := tt
+		t.Run(testCase.wantValue, func(t *testing.T) {
+			tr := &mocktracer.MockTracer{}
+			mw := Middleware(tr, mux, testCase.options...)
+			srv := httptest.NewServer(mw)
+			defer srv.Close()
+
+			request, err := http.NewRequest("GET", srv.URL+"/root", nil)
+			if err != nil {
+				t.Fatalf("error creating request: %v", err)
+			}
+			request.Header.Add(header, value)
+			_, err = http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("server returned error: %v", err)
+			}
+
+			spans := tr.FinishedSpans()
+			if got, want := len(spans), 1; got != want {
+				t.Fatalf("got %d spans, expected %d", got, want)
+			}
+
+			gotValue := spans[0].Tag(tagKey)
+			if gotValue == nil {
+				gotValue = ""
+			}
+			if got, want := gotValue.(string), testCase.wantValue; got != want {
+				t.Fatalf("got %s tag value, expected %s", got, want)
+			}
+		})
+	}
+}
